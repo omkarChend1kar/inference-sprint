@@ -17,7 +17,7 @@ x3 = torch.tensor([[1.0,0,0,1],[1.0,0,0,1]]).view(1,1,2,4)
 
 import torch
 from transformers import AutoModelForCausalLM
-from layer import RMSNorm, rope_tables
+from layer import RMSNorm, rope_tables, Attention, apply_rope
 from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb
 
 MODEL_PATH = "../models/Qwen3-0.6B"
@@ -26,9 +26,8 @@ torch.manual_seed(0)
 device = "mps" if torch.backends.mps.is_available() else "cpu"
 
 model = AutoModelForCausalLM.from_pretrained(
-    MODEL_PATH,
-    torch_dtype=torch.float32
-).to(device)
+    MODEL_PATH, torch_dtype=torch.float32, attn_implementation="eager"
+)
 model.eval()
 hf_layer = model.model.layers[0]
 
@@ -55,6 +54,31 @@ with torch.no_grad():
     hf_q, hf_k = apply_rotary_pos_emb(q, k, hf_cos, hf_sin)
     print("rope rotate q", diff(apply_rope(q, cos, sin), hf_q))
     print("rope rotate k", diff(apply_rope(k, cos, sin), hf_k))
+
+    # 5. Attention part 1 — Q, K, V
+    hf_attn = hf_layer.self_attn
+    mine_attn = Attention(model.config)
+    mine_attn.load_state_dict(hf_attn.state_dict())
+    q, k, v = mine_attn.qkv(x, cos, sin)
+
+    # reference: the same five steps using HF's own pieces
+    B, S, _ = x.shape
+    hq = hf_attn.q_norm(hf_attn.q_proj(x).view(B, S, -1, 128)).transpose(1, 2)
+    hk = hf_attn.k_norm(hf_attn.k_proj(x).view(B, S, -1, 128)).transpose(1, 2)
+    hv = hf_attn.v_proj(x).view(B, S, -1, 128).transpose(1, 2)
+    hq, hk = apply_rotary_pos_emb(hq, hk, hf_cos, hf_sin)
+
+    print("shapes       ", tuple(q.shape), tuple(k.shape), tuple(v.shape))
+    print("attn q       ", diff(q, hq))
+    print("attn k       ", diff(k, hk))
+    print("attn v       ", diff(v, hv))
+
+    # 6. Attention full — the whole module, x in, update out
+    mask = torch.triu(torch.full((5, 5), float("-inf")), diagonal=1)[None, None]
+    hf_out, _ = hf_attn(x, position_embeddings=(hf_cos, hf_sin), attention_mask=mask)
+    mine_out = mine_attn(x, cos, sin)
+    print("attn shape   ", tuple(mine_out.shape))
+    print("attn full    ", diff(mine_out, hf_out))
 
 
 

@@ -58,3 +58,81 @@ def apply_rope(x, cos, sin):
     new_b = a * sin + b * cos
 
     return torch.cat([new_a, new_b], dim=-1)
+
+
+
+class Attention(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.n_heads = cfg.num_attention_heads      # 16
+        self.n_kv = cfg.num_key_value_heads         # 8
+        self.head_dim = cfg.head_dim                # 128
+        # q_proj: cfg.hidden_size → n_heads * head_dim, bias=False
+        self.q_proj = nn.Linear(cfg.hidden_size, self.n_heads * self.head_dim, bias=False)
+        # k_proj: cfg.hidden_size → n_kv * head_dim,    bias=False
+        self.k_proj = nn.Linear(cfg.hidden_size, self.n_kv * self.head_dim, bias=False)
+        # v_proj: cfg.hidden_size → n_kv * head_dim,    bias=False
+        self.v_proj = nn.Linear(cfg.hidden_size, self.n_kv * self.head_dim, bias=False)
+        # o_proj: n_heads * head_dim → cfg.hidden_size, bias=False
+        self.o_proj = nn.Linear(self.n_heads * self.head_dim, cfg.hidden_size, bias=False)
+        # q_norm: RMSNorm(head_dim, eps=cfg.rms_norm_eps)
+        self.q_norm = RMSNorm(self.head_dim, eps=cfg.rms_norm_eps)
+        # k_norm: RMSNorm(head_dim, eps=cfg.rms_norm_eps)
+        self.k_norm = RMSNorm(self.head_dim, eps=cfg.rms_norm_eps)
+
+    def qkv(self, x, cos, sin):
+        B, S, _ = x.shape
+        # 1. project      → q (B,S,2048), k and v (B,S,1024)
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+        # 2. view          → q (B,S,16,128), k and v (B,S,8,128)
+        q = q.view(B, S, self.n_heads, self.head_dim)
+        k = k.view(B, S, self.n_kv, self.head_dim)
+        v = v.view(B, S, self.n_kv, self.head_dim)
+        # 3. QK-norm       → q_norm on q, k_norm on k, nothing on v
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+        # 4. transpose(1,2)→ (B, heads, S, 128) for all three
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        # 5. apply_rope    → on q and k, nothing on v
+        q = apply_rope(q, cos, sin)
+        k = apply_rope(k, cos, sin)
+        return q, k, v
+
+    def forward(self, x, cos, sin):
+        B, S, _ = x.shape
+        q, k, v = self.qkv(x, cos, sin)       # q (B,16,S,128), k and v (B,8,S,128)
+
+        # 6. GQA — duplicate each K/V head in place: 8 → 16, order 0,0,1,1,...
+        group = self.n_heads // self.n_kv 
+        k = torch.repeat_interleave(k, group, dim=1)
+        v = torch.repeat_interleave(v, group, dim=1)
+
+        # 7. scores — every query against every key, per head → (B,16,S,S)
+        # q @ k.transpose(-2, -1), then divide by math.sqrt(self.head_dim)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)
+
+        # 8. mask — block looking ahead
+        #    mask = torch.triu(torch.full((S, S), float("-inf"), device=x.device), diagonal=1)
+        #    scores = scores + mask
+        mask = torch.triu(torch.full((S, S), float("-inf"), device=x.device), diagonal=1)
+        scores = scores + mask
+
+        # 9. softmax over the last axis, in float32, then back to q's dtype
+        #    torch.softmax(scores, dim=-1, dtype=torch.float32).to(q.dtype)
+        scores = torch.softmax(scores, dim=-1, dtype=torch.float32).to(q.dtype)
+
+        # 10. blend — weights @ v → (B,16,S,128)
+        #     torch.matmul(scores, v)
+        x = torch.matmul(scores, v)
+
+        # 11. merge heads — (B,16,S,128) → (B,S,16,128) → (B,S,2048)
+        #     .transpose(1, 2) then .reshape(B, S, self.n_heads * self.head_dim)
+        x = x.transpose(1, 2).reshape(B, S, self.n_heads * self.head_dim)
+
+        # 12. output projection → (B,S,1024)
+        #     return self.o_proj(...)
+        return self.o_proj(x)
