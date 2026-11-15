@@ -113,7 +113,8 @@ class Attention(nn.Module):
 
         # 7. scores — every query against every key, per head → (B,16,S,S)
         # q @ k.transpose(-2, -1), then divide by math.sqrt(self.head_dim)
-        scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        scale = self.head_dim ** -0.5          # 1 / √128
+        scores = torch.matmul(q, k.transpose(-2, -1)) * scale
 
         # 8. mask — block looking ahead
         #    mask = torch.triu(torch.full((S, S), float("-inf"), device=x.device), diagonal=1)
