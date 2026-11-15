@@ -1,4 +1,4 @@
-from layer import RMSNorm, apply_rope, rope_tables
+from layer import DecoderLayer, RMSNorm, apply_rope, rope_tables, MLP, Attention
 import torch
 n = RMSNorm(2)
 # print(n(torch.tensor([3.0, 4.0])))
@@ -17,7 +17,7 @@ x3 = torch.tensor([[1.0,0,0,1],[1.0,0,0,1]]).view(1,1,2,4)
 
 import torch
 from transformers import AutoModelForCausalLM
-from layer import RMSNorm, rope_tables, Attention, apply_rope
+from layer import RMSNorm, rope_tables, Attention, apply_rope, MLP
 from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb
 
 MODEL_PATH = "../models/Qwen3-0.6B"
@@ -80,5 +80,14 @@ with torch.no_grad():
     print("attn shape   ", tuple(mine_out.shape))
     print("attn full    ", diff(mine_out, hf_out))
 
+    # 7. MLP
+    mine_mlp = MLP(model.config)
+    mine_mlp.load_state_dict(hf_layer.mlp.state_dict())
+    print("mlp     ", diff(mine_mlp(x), hf_layer.mlp(x)))
 
 
+    # 8. Full decoder layer — the Day 1 gate
+    mine_layer = DecoderLayer(model.config)
+    mine_layer.load_state_dict(hf_layer.state_dict())
+    hf_layer_out = hf_layer(x, attention_mask=mask, position_embeddings=(hf_cos, hf_sin))[0]
+    print("layer        ", diff(mine_layer(x, cos, sin), hf_layer_out))

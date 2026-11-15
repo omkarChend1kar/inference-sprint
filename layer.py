@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps=1e-6):
@@ -137,3 +138,42 @@ class Attention(nn.Module):
         # 12. output projection → (B,S,1024)
         #     return self.o_proj(...)
         return self.o_proj(x)
+
+class MLP(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        # gate_proj: cfg.hidden_size → cfg.intermediate_size, bias=False
+        self.gate_proj = nn.Linear(cfg.hidden_size, cfg.intermediate_size, bias=False)
+        # up_proj:   cfg.hidden_size → cfg.intermediate_size, bias=False
+        self.up_proj = nn.Linear(cfg.hidden_size, cfg.intermediate_size, bias=False)
+        # down_proj: cfg.intermediate_size → cfg.hidden_size, bias=False
+        self.down_proj = nn.Linear(cfg.intermediate_size, cfg.hidden_size, bias=False)
+
+    def forward(self, x):
+        # gate = gate_proj(x)          (B,S,3072)
+        gate = self.gate_proj(x)
+        # up   = up_proj(x)(B,S,3072)
+        up = self.up_proj(x)
+        # h= F.silu(gate) * up (B,S,3072)  element by element
+        h = F.silu(gate) * up
+        # return down_proj(h)  (B,S,1024)
+        return self.down_proj(h)
+
+class DecoderLayer(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        # input_layernorm:          RMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps)
+        self.input_layernorm = RMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps)
+        # self_attn:                Attention(cfg)
+        self.self_attn = Attention(cfg)
+        # post_attention_layernorm: RMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps)
+        self.post_attention_layernorm = RMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps)
+        # mlp:                      MLP(cfg)
+        self.mlp = MLP(cfg)
+
+    def forward(self, x, cos, sin):
+        # x = x + attention of (normalized copy of x)
+        x = x + self.self_attn(self.input_layernorm(x), cos, sin)
+        # x = x + mlp of (normalized copy of x)
+        x = x + self.mlp(self.post_attention_layernorm(x))
+        return x
