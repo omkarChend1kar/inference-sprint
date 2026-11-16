@@ -42,3 +42,17 @@ def load(path):
              for k, v in state.items() if k != "lm_head.weight"}
     model.load_state_dict(state, strict=True)
     return model.eval()
+
+@torch.no_grad()
+def generate(model, ids, max_new_tokens, eos_id=None):
+    for _ in range(max_new_tokens):
+        # 1. logits = model(ids)
+        logits = model(ids)
+        # 2. next_id = logits[:, -1].argmax(dim=-1, keepdim=True)     → (1, 1)
+        next_id = logits[:, -1].argmax(dim=-1, keepdim=True)
+        # 3. ids = torch.cat([ids, next_id], dim=1)
+        ids = torch.cat([ids, next_id], dim=1)
+        # 4. if eos_id is not None and next_id.item() == eos_id: break
+        if eos_id is not None and next_id.item() == eos_id:
+            break
+    return ids
