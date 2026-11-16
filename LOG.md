@@ -10,3 +10,10 @@ Thu Nov 12 14:02:24 UTC 2026: setup complete, oracle confirmed working on A5000,
 - Greedy generate, 30 tokens: identical to HF
 - Baseline, no cache: 9.46 s / 30 tokens (~3.2 tok/s)
   Intel Mac CPU, float32, 5-token prompt
+
+## Day 3 — Mon 16 Nov
+- KV cache: generated tokens identical to no-cache version
+- 30 tokens: 2.91 s with cache vs 32.83 s without → 11.3x
+  (baseline varied 9.46 s → 32.83 s between runs: single timings unreliable)
+- Speedup < 17x work ratio: each decode pass reads all weights regardless
+  of token count → decode is memory-bandwidth-bound
