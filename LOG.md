@@ -17,3 +17,14 @@ Thu Nov 12 14:02:24 UTC 2026: setup complete, oracle confirmed working on A5000,
   (baseline varied 9.46 s → 32.83 s between runs: single timings unreliable)
 - Speedup < 17x work ratio: each decode pass reads all weights regardless
   of token count → decode is memory-bandwidth-bound
+
+## Day 3 — prefill vs decode (median of 3, after warm-up, own model only)
+| prompt | TTFT s | TPOT s |
+|   5    | 0.167  | 0.117  |
+|  50    | 0.992  | 0.140  |
+| 200    | 2.460  | 0.157  |
+| 500    | 4.126  | 0.165  |
+- TTFT grows sublinearly: per-token prefill cost falls 33 → 8 ms
+- TPOT nearly flat: a decode pass ≈ one read of the weights
+- 2.4 GB / 0.117 s ≈ 20 GB/s → decode runs at RAM bandwidth (memory-bound)
+- Extra tokens in a pass are cheap (~12 ms) vs the pass itself (~117 ms) → batching
