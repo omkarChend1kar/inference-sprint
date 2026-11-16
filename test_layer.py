@@ -91,3 +91,4 @@ with torch.no_grad():
     mine_layer.load_state_dict(hf_layer.state_dict())
     hf_layer_out = hf_layer(x, attention_mask=mask, position_embeddings=(hf_cos, hf_sin))[0]
     print("layer        ", diff(mine_layer(x, cos, sin), hf_layer_out))
+
