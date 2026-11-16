@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 from safetensors.torch import load_file
-from layer import RMSNorm, DecoderLayer, rope_tables
+from layer import LayerCache, RMSNorm, DecoderLayer, rope_tables
 
 
 class Qwen3(nn.Module):
@@ -20,12 +20,13 @@ class Qwen3(nn.Module):
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
 
-    def forward(self, ids):                         # ids: (B, S)
+    def forward(self, ids, caches=None, start_index=0):                         # ids: (B, S)
         # 1. x = embedding lookup of ids             → (B, S, 1024)
         x = self.embed_tokens(ids)
         # 2. for each layer: x = layer(x, self.cos, self.sin)
-        for layer in self.layers:
-            x = layer(x, self.cos, self.sin)
+        for i, layer in enumerate(self.layers):
+            cache = caches[i] if caches is not None else None
+            x = layer(x, self.cos, self.sin, cache=cache, start_index=start_index)
         # 3. x = final norm of x
         x = self.norm(x)
         # 4. logits = x @ self.embed_tokens.weight.T  → (B, S, 151936)
@@ -56,3 +57,35 @@ def generate(model, ids, max_new_tokens, eos_id=None):
         if eos_id is not None and next_id.item() == eos_id:
             break
     return ids
+
+@torch.no_grad()
+def generate_cached(model, ids, max_new_tokens, eos_id=None):
+    caches = [LayerCache() for _ in model.layers]      # 28 empty caches
+
+    # PREFILL — whole prompt once, positions start at 0, fills every cache
+
+    # 1. logits = model(ids, caches, start=0)
+    logits = model(ids, caches, start_index=0)
+    # 2. next_id = argmax of the last row             → (1, 1)
+    next_id = logits[:, -1].argmax(dim=-1, keepdim=True)
+    # 3. out = torch.cat([ids, next_id], dim=1)
+    out = torch.cat([ids, next_id], dim=1)
+    # 4. pos = ids.shape[1]                            ← position of next_id
+    pos = ids.shape[1]
+
+    # DECODE — one token per pass
+    # repeat max_new_tokens - 1 times:
+    #     stop if next_id is eos_id
+    #     logits = model(next_id, caches, start=pos)  ← only ONE token in
+    #     pos += 1
+    #     next_id = argmax of the last row
+    #     out = torch.cat([out, next_id], dim=1)
+    # return out
+    for _ in range(max_new_tokens - 1):
+        if eos_id is not None and next_id.item() == eos_id:
+            break
+        logits = model(next_id, caches, start_index=pos)
+        pos += 1
+        next_id = logits[:, -1].argmax(dim=-1, keepdim=True)
+        out = torch.cat([out, next_id], dim=1)
+    return out

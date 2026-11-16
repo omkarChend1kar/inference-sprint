@@ -38,7 +38,7 @@ def rope_tables(head_dim, max_pos, theta=1_000_000.0):
     return torch.cos(emb), torch.sin(emb)
 
 
-def apply_rope(x, cos, sin):
+def apply_rope(x, cos, sin, start_index=0):
     # x: (batch, seq_len, num_heads, head_dim)
     # cos, sin: (rigtness / leftness of a pair at that position, up / downness of a pair at that position)
     # returns: (batch, seq_len, num_heads, head_dim)
@@ -49,8 +49,8 @@ def apply_rope(x, cos, sin):
     half = x.shape[-1] // 2
 
     # take rows for this sentence, add batch & head axes
-    cos = cos[:seq_len][None, None, :, :half]
-    sin = sin[:seq_len][None, None, :, :half]
+    cos = cos[start_index:start_index + seq_len][None, None, :, :half]
+    sin = sin[start_index:start_index + seq_len][None, None, :, :half]
 
     a = x[..., :half]    # each pair's first number  (channels 0..63)
     b = x[..., half:]    # each pair's second number (channels 64..127)
@@ -81,7 +81,7 @@ class Attention(nn.Module):
         # k_norm: RMSNorm(head_dim, eps=cfg.rms_norm_eps)
         self.k_norm = RMSNorm(self.head_dim, eps=cfg.rms_norm_eps)
 
-    def qkv(self, x, cos, sin):
+    def qkv(self, x, cos, sin, start_index=0):
         B, S, _ = x.shape
         # 1. project      → q (B,S,2048), k and v (B,S,1024)
         q = self.q_proj(x)
@@ -99,14 +99,17 @@ class Attention(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
         # 5. apply_rope    → on q and k, nothing on v
-        q = apply_rope(q, cos, sin)
-        k = apply_rope(k, cos, sin)
+        q = apply_rope(q, cos, sin, start_index)
+        k = apply_rope(k, cos, sin, start_index)
         return q, k, v
 
-    def forward(self, x, cos, sin):
+    def forward(self, x, cos, sin, cache=None, start_index=0):
         B, S, _ = x.shape
-        q, k, v = self.qkv(x, cos, sin)       # q (B,16,S,128), k and v (B,8,S,128)
+        q, k, v = self.qkv(x, cos, sin, start_index)  # q (B,16,S,128), k and v (B,8,S,128)
 
+        # ← new: append, get full cache
+        if cache is not None:
+            k, v = cache.append(k, v)  # (B,8,tokens_so_far,128)
         # 6. GQA — duplicate each K/V head in place: 8 → 16, order 0,0,1,1,...
         group = self.n_heads // self.n_kv 
         k = torch.repeat_interleave(k, group, dim=1)
@@ -120,8 +123,9 @@ class Attention(nn.Module):
         # 8. mask — block looking ahead
         #    mask = torch.triu(torch.full((S, S), float("-inf"), device=x.device), diagonal=1)
         #    scores = scores + mask
-        mask = torch.triu(torch.full((S, S), float("-inf"), device=x.device), diagonal=1)
-        scores = scores + mask
+        if S > 1:
+            mask = torch.triu(torch.full((S, S), float("-inf"), device=x.device), diagonal=1)
+            scores = scores + mask
 
         # 9. softmax over the last axis, in float32, then back to q's dtype
         #    torch.softmax(scores, dim=-1, dtype=torch.float32).to(q.dtype)
@@ -171,9 +175,25 @@ class DecoderLayer(nn.Module):
         # mlp:                      MLP(cfg)
         self.mlp = MLP(cfg)
 
-    def forward(self, x, cos, sin):
+    def forward(self, x, cos, sin, cache=None, start_index=0):
         # x = x + attention of (normalized copy of x)
-        x = x + self.self_attn(self.input_layernorm(x), cos, sin)
+        x = x + self.self_attn(self.input_layernorm(x), cos, sin, cache, start_index)
         # x = x + mlp of (normalized copy of x)
         x = x + self.mlp(self.post_attention_layernorm(x))
         return x
+
+
+
+class LayerCache:
+    def __init__(self):
+        self.k = None      # (B, 8, tokens_so_far, 128)
+        self.v = None
+
+    def append(self, k, v):
+        # first call (prefill): just store. Later calls: glue new tokens on the end.
+        if self.k is None:
+            self.k, self.v = k, v
+        else:
+            self.k = torch.cat([self.k, k], dim=2)
+            self.v = torch.cat([self.v, v], dim=2)
+        return self.k, self.v
