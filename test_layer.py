@@ -92,3 +92,44 @@ with torch.no_grad():
     hf_layer_out = hf_layer(x, attention_mask=mask, position_embeddings=(hf_cos, hf_sin))[0]
     print("layer        ", diff(mine_layer(x, cos, sin), hf_layer_out))
 
+    # 9. RoPE with explicit positions must equal the start-based version
+    q = torch.randn(1, 16, 5, 128)
+    a = apply_rope(q, cos, sin, start_index=3)
+    b = apply_rope(q, cos, sin, positions=torch.tensor([3, 4, 5, 6, 7]))
+    print("rope positions", diff(a, b))
+
+    # 10. Batched attention: one pile == each user run alone
+    from layer import LayerCache
+    attn = mine_attn
+    xA = torch.randn(1, 3, 1024)      # user A: 3 tokens
+    xB = torch.randn(1, 2, 1024)      # user B: 2 tokens
+
+    # --- prefill: A and B together in one pile ---
+    cA, cB = LayerCache(), LayerCache()
+    pile = attn.forward_batch(
+        torch.cat([xA, xB], dim=1), cos, sin,
+        positions=torch.tensor([0, 1, 2, 0, 1]),
+        seqs=[(0, 3), (3, 2)],
+        caches=[cA, cB],
+    )
+
+    # --- reference: each user alone, with its own cache ---
+    sA, sB = LayerCache(), LayerCache()
+    aloneA = attn(xA, cos, sin, cache=sA, start_index=0)
+    aloneB = attn(xB, cos, sin, cache=sB, start_index=0)
+
+    print("batch prefill A", diff(pile[:, 0:3], aloneA))
+    print("batch prefill B", diff(pile[:, 3:5], aloneB))
+
+    # --- decode: one new token each; A is at position 3, B at position 2 ---
+    dA = torch.randn(1, 1, 1024)
+    dB = torch.randn(1, 1, 1024)
+    pile = attn.forward_batch(
+        torch.cat([dA, dB], dim=1), cos, sin,
+        positions=torch.tensor([3, 2]),
+        seqs=[(0, 1), (1, 1)],
+        caches=[cA, cB],
+    )
+    print("batch decode A ", diff(pile[:, 0:1], attn(dA, cos, sin, cache=sA, start_index=3)))
+    print("batch decode B ", diff(pile[:, 1:2], attn(dB, cos, sin, cache=sB, start_index=2)))
+    print("magnitude", pile.abs().max().item())

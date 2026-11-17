@@ -47,3 +47,4 @@ t_cached = time.perf_counter() - t0
 print("cache identical:", torch.equal(cached_ids, mine_ids))
 print(f"time: {t_cached:.2f}s with cache  vs  {t_mine:.2f}s without")
 print(f"speedup: {t_mine / t_cached:.1f}x")
+
