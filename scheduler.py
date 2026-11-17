@@ -53,6 +53,8 @@ def serve(model, requests, max_batch, eos_id=None):
             positions.extend(range(r.start, r.start + n))
             ids.extend(r.feed)
 
+        print(f"pass {step:>2}: " + "  ".join(f"{r.rid}×{len(r.feed)}" for r in running))
+
         # 4. RUN — logits = model.forward_batch(
         #              torch.tensor(ids), torch.tensor(positions),
         #              seqs, [r.caches for r in running])        → (U, 151936)
