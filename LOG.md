@@ -28,3 +28,10 @@ Thu Nov 12 14:02:24 UTC 2026: setup complete, oracle confirmed working on A5000,
 - TPOT nearly flat: a decode pass ≈ one read of the weights
 - 2.4 GB / 0.117 s ≈ 20 GB/s → decode runs at RAM bandwidth (memory-bound)
 - Extra tokens in a pass are cheap (~12 ms) vs the pass itself (~117 ms) → batching
+
+## Day 4 — Tue 17 Nov
+- Continuous batching: 4 requests, staggered arrivals, max_batch=3
+- Every request's output identical to running alone
+- Batched 17.0 tok/s vs sequential 9.6 tok/s → 1.8x
+  (batch rarely full; per-user attention loop in Python; batched run went first, unwarmed)
+- Batching raises throughput, slightly raises each request's per-token latency
