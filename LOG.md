@@ -35,3 +35,6 @@ Thu Nov 12 14:02:24 UTC 2026: setup complete, oracle confirmed working on A5000,
 - Batched 17.0 tok/s vs sequential 9.6 tok/s → 1.8x
   (batch rarely full; per-user attention loop in Python; batched run went first, unwarmed)
 - Batching raises throughput, slightly raises each request's per-token latency
+- Trace matched prediction: max_batch=3 → 22 passes, avg batch 2.6, D queued 7 passes
+- max_batch=4 → 20 passes, avg batch 2.9, D admitted on arrival
+- Run-to-run noise ±10–15%: single runs can't rank 3 vs 4
