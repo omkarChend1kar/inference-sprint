@@ -33,6 +33,25 @@ class Qwen3(nn.Module):
         logits = x @ self.embed_tokens.weight.T
         # return logits
         return logits
+    def forward_batch(self, ids, positions, seqs, caches):
+        # ids: (T,) every user's tokens for this pass, flattened in pile order
+        # 1. x = embedding lookup of ids, then add a batch axis   → (1, T, 1024)
+        x = self.embed_tokens(ids)[None, :, :]
+        # 2. for l, layer in enumerate(self.layers):
+        #        x = layer.forward_batch(x, self.cos, self.sin, positions, seqs,
+        #                                [c[l] for c in caches])
+        for l, layer in enumerate(self.layers):
+            layer_caches = [c[l] for c in caches]
+            x = layer.forward_batch(x, self.cos, self.sin, positions, seqs, layer_caches)
+        # 3. x = final norm of x
+        x = self.norm(x)
+        # 4. last = [off + n - 1 for off, n in seqs]              ← each user's last row
+        last = [off + n - 1 for off, n in seqs]
+        # 5. x = x[0, last]                                       → (U, 1024)
+        x = x[0, last]
+        # 6. return x @ self.embed_tokens.weight.T               → (U, 151936)
+        logits = x @ self.embed_tokens.weight.T
+        return logits
 
 
 def load(path):

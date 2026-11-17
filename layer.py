@@ -38,7 +38,7 @@ def rope_tables(head_dim, max_pos, theta=1_000_000.0):
     return torch.cos(emb), torch.sin(emb)
 
 
-def apply_rope(x, cos, sin, start_index=0):
+def apply_rope(x, cos, sin, start_index=0, positions=None):
     # x: (batch, seq_len, num_heads, head_dim)
     # cos, sin: (rigtness / leftness of a pair at that position, up / downness of a pair at that position)
     # returns: (batch, seq_len, num_heads, head_dim)
@@ -48,9 +48,14 @@ def apply_rope(x, cos, sin, start_index=0):
     # group the last dimension into pairs of numbers (64 pairs for 128 channels)
     half = x.shape[-1] // 2
 
-    # take rows for this sentence, add batch & head axes
-    cos = cos[start_index:start_index + seq_len][None, None, :, :half]
-    sin = sin[start_index:start_index + seq_len][None, None, :, :half]
+    if positions is not None:
+        # take rows for this sentence, add batch & head axes
+        cos = cos[positions][None, None, :, :half]
+        sin = sin[positions][None, None, :, :half]
+    else:
+        # take rows for this sentence, add batch & head axes
+        cos = cos[start_index:start_index + seq_len][None, None, :, :half]
+        sin = sin[start_index:start_index + seq_len][None, None, :, :half]
 
     a = x[..., :half]    # each pair's first number  (channels 0..63)
     b = x[..., half:]    # each pair's second number (channels 64..127)
@@ -81,7 +86,7 @@ class Attention(nn.Module):
         # k_norm: RMSNorm(head_dim, eps=cfg.rms_norm_eps)
         self.k_norm = RMSNorm(self.head_dim, eps=cfg.rms_norm_eps)
 
-    def qkv(self, x, cos, sin, start_index=0):
+    def qkv(self, x, cos, sin, start_index=0, positions=None):
         B, S, _ = x.shape
         # 1. project      → q (B,S,2048), k and v (B,S,1024)
         q = self.q_proj(x)
@@ -99,8 +104,8 @@ class Attention(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
         # 5. apply_rope    → on q and k, nothing on v
-        q = apply_rope(q, cos, sin, start_index)
-        k = apply_rope(k, cos, sin, start_index)
+        q = apply_rope(q, cos, sin, start_index=start_index, positions=positions)
+        k = apply_rope(k, cos, sin, start_index=start_index, positions=positions)
         return q, k, v
 
     def forward(self, x, cos, sin, cache=None, start_index=0):
@@ -143,6 +148,38 @@ class Attention(nn.Module):
         #     return self.o_proj(...)
         return self.o_proj(x)
 
+    def forward_batch(self, x, cos, sin, positions, seqs, caches):
+        B, T, _ = x.shape
+        q, k, v = self.qkv(x, cos, sin, positions=positions)   # whole pile
+        group = self.n_heads // self.n_kv
+        scale = self.head_dim ** -0.5
+
+        outs = []
+        for (off, n), cache in zip(seqs, caches):
+            # 1. q_u = q[:, :, off:off+n];  same slice for k and v
+            q_u = q[:, :, off:off+n]
+            # 2. k_u, v_u = cache.append(k slice, v slice)       ← this user's full cache
+            k_u, v_u = cache.append(k[:, :, off:off+n], v[:, :, off:off+n])
+            # 3. repeat_interleave k_u, v_u by group on dim=1
+            k_u = torch.repeat_interleave(k_u, group, dim=1)
+            v_u = torch.repeat_interleave(v_u, group, dim=1)
+            # 4. scores = q_u @ k_u.transpose(-2, -1) * scale     → (1, 16, n, L)
+            scores = torch.matmul(q_u, k_u.transpose(-2, -1)) * scale
+            # 5. if n > 1: assert k_u.shape[2] == n, then add the causal mask (n × n)
+            if n > 1:
+                assert k_u.shape[2] == n
+                mask = torch.triu(torch.full((n, n), float("-inf"), device=x.device), diagonal=1)
+                scores = scores + mask
+            # 6. weights = softmax(float32 → q's dtype);  out_u = weights @ v_u
+            weights = torch.softmax(scores, dim=-1, dtype=torch.float32).to(q.dtype)
+            out_u = torch.matmul(weights, v_u)  
+            # 7. outs.append(out_u)
+            outs.append(out_u)
+
+        out = torch.cat(outs, dim=2)                              # (1, 16, T, 128)
+        out = out.transpose(1, 2).reshape(B, T, self.n_heads * self.head_dim)
+        return self.o_proj(out)
+
 class MLP(nn.Module):
     def __init__(self, cfg):
         super().__init__()
@@ -178,6 +215,12 @@ class DecoderLayer(nn.Module):
     def forward(self, x, cos, sin, cache=None, start_index=0):
         # x = x + attention of (normalized copy of x)
         x = x + self.self_attn(self.input_layernorm(x), cos, sin, cache, start_index)
+        # x = x + mlp of (normalized copy of x)
+        x = x + self.mlp(self.post_attention_layernorm(x))
+        return x
+    def forward_batch(self, x, cos, sin, positions, seqs, caches):
+        # x = x + attention of (normalized copy of x)
+        x = x + self.self_attn.forward_batch(self.input_layernorm(x), cos, sin, positions, seqs, caches)
         # x = x + mlp of (normalized copy of x)
         x = x + self.mlp(self.post_attention_layernorm(x))
         return x
