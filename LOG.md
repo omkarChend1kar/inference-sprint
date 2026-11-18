@@ -38,3 +38,12 @@ Thu Nov 12 14:02:24 UTC 2026: setup complete, oracle confirmed working on A5000,
 - Trace matched prediction: max_batch=3 → 22 passes, avg batch 2.6, D queued 7 passes
 - max_batch=4 → 20 passes, avg batch 2.9, D admitted on arrival
 - Run-to-run noise ±10–15%: single runs can't rank 3 vs 4
+
+## Day 5 — Wed 18 Nov — GATE PASSED
+- Paged KV cache: BlockPool (fixed tensors per layer + free list), PagedSeq (block table),
+  PagedLayer (same append() interface — attention unchanged)
+- 10 requests, staggered, 6-block pool (96 tokens, 22 MB, allocated once):
+  all identical to running alone; 6/6 blocks free at end
+- max_batch=8 but pile never > 4: admission limited by memory
+- Conservative admission (reserve worst case) left 3/6 blocks idle while 6 requests
+  queued (passes 2–10) → motivates optimistic admission + preemption (vLLM)
