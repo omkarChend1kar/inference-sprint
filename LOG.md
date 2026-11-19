@@ -58,3 +58,8 @@ Thu Nov 12 14:02:24 UTC 2026: setup complete, oracle confirmed working on A5000,
   3-block pool: preemptions 6 → 5, recomputed tokens 88 → 77 → 71
   Remaining preemptions = lost optimistic bets; fewer requires a larger reserve (idle memory)
 - Same 6-block schedule timed 3×: 10.40 / 8.11 / 7.45 s → ±40%, single runs meaningless
+
+## Day 6 setup — Thu 19 Nov
+- GPU: RTX A6000 48 GB, RunPod EU-SE-1, $0.70/hr
+- vLLM 0.34.0, own venv at /workspace/vllm-env (~20 GB — CUDA 12 + 13 libs)
+- Install into network volume: ~25 min; use tmux for long installs
