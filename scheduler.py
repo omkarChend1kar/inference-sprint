@@ -142,7 +142,7 @@ def serve_paged(model, requests, pool, max_batch, eos_id=None):
         # 4. RUN
         logits = model.forward_batch(
             torch.tensor(ids), torch.tensor(positions),
-            seqs, [r.caches for r in running])
+            seqs, [r.caches for r in running],)
 
         # 5. UPDATE each request
         for i, r in enumerate(running):
@@ -164,4 +164,104 @@ def serve_paged(model, requests, pool, max_batch, eos_id=None):
                 finished.append(r)
 
         step += 1
+    return finished
+
+
+@torch.no_grad()
+def serve_preempt(model, requests, pool, max_batch, eos_id=None):
+    bs = pool.block_size
+    waiting = sorted(requests, key=lambda r: r.arrival)
+    running, finished = [], []
+    step = 0
+    preemptions = 0
+
+    def blocks_for(n_tokens):
+        return (n_tokens + bs - 1) // bs
+
+    def growth():
+        # blocks the running requests must take from the pool THIS pass
+        return sum(blocks_for(r.seq.length + len(r.feed)) - len(r.seq.table)
+                   for r in running)
+    def growth_next():
+        # blocks running requests need to finish this pass AND add one more token
+        return sum(blocks_for(r.seq.length + len(r.feed) + 1) - len(r.seq.table)
+                for r in running)
+
+    while waiting or running:
+        # 1. ADMIT — optimistic: room for what it needs NOW, on top of this pass's growth
+        while len(running) < max_batch and waiting and waiting[0].arrival <= step:
+            r = waiting[0]
+            feed = list(r.prompt) + r.out        # prompt, plus anything generated before a preemption
+            # without headroom, admit only if the growth of the running requests plus the blocks needed for this request's feed fits in the pool
+            # if growth() + blocks_for(len(feed)) > len(pool.free):
+            # with headroom, admit only if the growth of the running requests plus the blocks needed for this request's feed plus one more block fits in the pool
+            #if growth() + blocks_for(len(feed) + 1) > len(pool.free):
+            if growth_next() + blocks_for(len(feed) + 1) > len(pool.free):
+                break
+            waiting.pop(0)
+            r.seq = PagedSeq(pool)
+            r.caches = [r.seq.layer(l) for l in range(len(model.layers))]
+            r.feed = feed
+            r.start = 0
+            running.append(r)
+
+        # 2. PREEMPT — if the running requests need more blocks than exist, evict the newest
+        while running and growth() > len(pool.free):
+            victim = running.pop()               # last admitted = least work lost
+            victim.seq.release()
+            victim.caches = None
+            waiting.insert(0, victim)            # front of the queue: first to be readmitted
+            preemptions += 1
+            print(f"pass {step:>2}: PREEMPT {victim.rid} "
+                  f"(had {len(victim.prompt) + len(victim.out)} tokens)")
+
+        if not running:
+            if waiting and waiting[0].arrival <= step:
+                raise RuntimeError(f"request {waiting[0].rid} needs more blocks than the pool has")
+            step += 1
+            continue
+
+        # 3. RESERVE — guaranteed to fit now
+        for r in running:
+            r.seq.reserve(len(r.feed))
+
+        # 4. BUILD THE PILE
+        ids, positions, seqs = [], [], []
+        off = 0
+        for r in running:
+            n = len(r.feed)
+            seqs.append((off, n))
+            off += n
+            positions.extend(range(r.start, r.start + n))
+            ids.extend(r.feed)
+
+        print(f"pass {step:>2}: " + "  ".join(f"{r.rid}×{len(r.feed)}" for r in running)
+              + f"   free={len(pool.free)}  waiting={sum(w.arrival <= step for w in waiting)}")
+
+        # 5. RUN
+        logits = model.forward_batch(
+            torch.tensor(ids), torch.tensor(positions),
+            seqs, [r.caches for r in running])
+
+        # 6. UPDATE
+        for i, r in enumerate(running):
+            t = logits[i].argmax().item()
+            r.out.append(t)
+            r.seq.commit(len(r.feed))
+            r.start += len(r.feed)
+            r.feed = [t]
+            if t == eos_id or len(r.out) >= r.max_new:
+                r.done = True
+
+        # 7. REMOVE finished
+        for r in running[:]:
+            if r.done:
+                r.seq.release()
+                r.caches = None
+                running.remove(r)
+                finished.append(r)
+
+        step += 1
+
+    print(f"preemptions: {preemptions}")
     return finished

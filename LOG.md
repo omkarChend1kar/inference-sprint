@@ -47,3 +47,14 @@ Thu Nov 12 14:02:24 UTC 2026: setup complete, oracle confirmed working on A5000,
 - max_batch=8 but pile never > 4: admission limited by memory
 - Conservative admission (reserve worst case) left 3/6 blocks idle while 6 requests
   queued (passes 2–10) → motivates optimistic admission + preemption (vLLM)
+
+## Thu 19 Nov — optimistic admission + preemption
+- Admit if current feed fits (after this pass's growth); preempt newest when growth > free
+- Preempted request readmitted with prompt + generated tokens; outputs still identical
+- 6 blocks: D admitted pass 2 (vs 12); 42 passes (vs 56), avg batch 3.6 (vs 2.7),
+  3 preemptions, 33 tokens recomputed
+- 3 blocks: 6 preemptions, 88 tokens recomputed; C preempted twice in 3 passes (thrashing)
+- Headroom fix: admission reserves next-token room for ALL running requests (growth_next)
+  3-block pool: preemptions 6 → 5, recomputed tokens 88 → 77 → 71
+  Remaining preemptions = lost optimistic bets; fewer requires a larger reserve (idle memory)
+- Same 6-block schedule timed 3×: 10.40 / 8.11 / 7.45 s → ±40%, single runs meaningless
