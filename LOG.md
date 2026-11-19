@@ -63,3 +63,9 @@ Thu Nov 12 14:02:24 UTC 2026: setup complete, oracle confirmed working on A5000,
 - GPU: RTX A6000 48 GB, RunPod EU-SE-1, $0.70/hr
 - vLLM 0.34.0, own venv at /workspace/vllm-env (~20 GB — CUDA 12 + 13 libs)
 - Install into network volume: ~25 min; use tmux for long installs
+- Concurrency sweep (128 in / 128 out, temperature 0.6 by server default):
+  c=1: 276 tok/s, TPOT 3.40 | c=4: 968, 3.70 | c=16: 2992, 4.52 | c=64: 6965, 7.91
+- Model: TPOT ≈ (weights 1.2 GB + c × 192 tok × 114,688 B) / 353 GB/s — fits all four within ~7%
+- KV reads grow per user; at c=64 they exceed the weights → batching amortises weights, not KV
+- c=64 P99 ITL 20.7 ms: prefills mixing into decode passes (Day 7)
+- Next: add --temperature 0, warm-ups, repeats
