@@ -154,4 +154,16 @@ real = {16: (15.7, 34, 4.49), 32: (31.4, 45, 5.87), 48: (47.0, 50, 6.92), 64: (6
 print(f"{'rate':>5} {'req/s':>7} {'real':>6} {'TTFT ms':>8} {'real':>7} {'TPOT':>6} {'real':>6} {'max waiting':>12}")
 for rate, (r_rps, r_ttft, r_tpot) in real.items():
     rps, ttft, tpot, maxw = open_loop(rate)
-    print(f"{rate:>5} {rps:>7.1f} {r_rps:>6.1f} {ttft:>8.0f} {r_ttft:>7.0f} {tpot:>6.2f} {r_tpot:>6.2f} {maxw:>12}")
+    print(f"{rate:>5} {rps:>7.1f} {r_rps:>6.1f} {ttft:>8.0f} {r_ttft:>7.0f} {tpot:>6.2f} {r_tpot:>6.2f} {maxw:>12}")    
+    
+    
+print("\noverloaded: rate 160")
+print(f"{'cap':>5} {'req/s':>7} {'TPOT ms':>8} {'TTFT ms':>8} {'max waiting':>12}")
+for cap in [64, 128, 256, 512, 1024]:
+    rps, ttft, tpot, maxw = open_loop(160, cap=cap)
+    print(f"{cap:>5} {rps:>7.1f} {tpot:>8.2f} {ttft:>8.0f} {maxw:>12}")
+
+print("\nnormal load: rate 48")
+for cap in [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]:
+    rps, ttft, tpot, maxw = open_loop(48, cap=cap)
+    print(f"{cap:>5} {rps:>7.1f} {tpot:>8.2f} {ttft:>8.0f} {maxw:>12}")
